@@ -27,16 +27,63 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
   }
   async create(createOrderDto: CreateOrderDto) {
     try {
-      const products = await firstValueFrom(
-        this.productsClient.send(
-          { cmd: 'validate_products' },
-          createOrderDto.items.map((item) => item.productId),
-        ),
+      const productIds = createOrderDto.items.map((item) => item.productId);
+
+      const products: any[] = await firstValueFrom(
+        this.productsClient.send({ cmd: 'validate_products' }, productIds),
+      );
+      const totalAmount = createOrderDto.items.reduce((acc, orderItem) => {
+        const price = products.find(
+          (product) => product.id === orderItem.productId,
+        ).price;
+
+        return price * orderItem.quantity + acc;
+      }, 0);
+
+      const totalItems = createOrderDto.items.reduce(
+        (acc, orderItem) => acc + orderItem.quantity,
+        0,
       );
 
-      return products;
+      const order = await this.order.create({
+        data: {
+          totalAmount,
+          totalItems,
+          OrderItem: {
+            createMany: {
+              data: createOrderDto.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                price: products.find((product) => product.id === item.productId)
+                  .price,
+              })),
+            },
+          },
+        },
+        include: {
+          OrderItem: {
+            select: {
+              price: true,
+              quantity: true,
+              productId: true,
+            },
+          },
+        },
+      });
+
+      return {
+        ...order,
+        OrderItem: order.OrderItem.map((item) => ({
+          ...item,
+          product: products.find((product) => product.id === item.productId)
+            .name,
+        })),
+      };
     } catch (error) {
-      throw new RpcException(error);
+      throw new RpcException({
+        status: HttpStatus.BAD_REQUEST,
+        message: error.message,
+      });
     }
   }
 
@@ -70,6 +117,15 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
       where: {
         id,
       },
+      include: {
+        OrderItem: {
+          select: {
+            price: true,
+            quantity: true,
+            productId: true,
+          },
+        },
+      },
     });
 
     if (!order) {
@@ -79,7 +135,18 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
       });
     }
 
-    return order;
+    const productIds = order.OrderItem.map((item) => item.productId);
+    const products: any[] = await firstValueFrom(
+      this.productsClient.send({ cmd: 'validate_products' }, productIds),
+    );
+
+    return {
+      ...order,
+      OrderItem: order.OrderItem.map((item) => ({
+        ...item,
+        product: products.find((product) => product.id === item.productId).name,
+      })),
+    };
   }
 
   async changeStatus(changeOrderStatusDto: ChangeOrdersStatusDto) {
